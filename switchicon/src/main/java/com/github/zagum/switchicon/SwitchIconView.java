@@ -16,6 +16,7 @@
 
 package com.github.zagum.switchicon;
 
+import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.TypedArray;
@@ -28,33 +29,20 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.Region;
 import android.os.Build;
+import android.os.Parcel;
+import android.os.Parcelable;
 import android.support.annotation.FloatRange;
-import android.support.annotation.IntDef;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v7.widget.AppCompatImageView;
 import android.util.AttributeSet;
 import android.view.animation.DecelerateInterpolator;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 
 public class SwitchIconView extends AppCompatImageView {
-
-  public static final int ENABLED = 0;
-  public static final int DISABLED = 1;
-
   private static final int DEFAULT_ANIMATION_DURATION = 300;
   private static final float DASH_THICKNESS_PART = 1f / 12f;
   private static final float DEFAULT_DISABLED_ALPHA = .5f;
   private static final float SIN_45 = (float) Math.sin(Math.toRadians(45));
-
-  @IntDef({
-      ENABLED,
-      DISABLED
-  })
-  @Retention(RetentionPolicy.SOURCE)
-  public @interface State {
-  }
 
   private final long animationDuration;
   @FloatRange(from = 0f, to = 1f)
@@ -62,14 +50,18 @@ public class SwitchIconView extends AppCompatImageView {
   private final int dashXStart;
   private final int dashYStart;
   private final Path clipPath;
+  private final int iconTintColor;
+  private final int disabledStateColor;
+  private final boolean noDash;
   private int dashThickness;
   private int dashLengthXProjection;
   private int dashLengthYProjection;
+  private PorterDuffColorFilter colorFilter;
+  private final ArgbEvaluator colorEvaluator = new ArgbEvaluator();
 
-  @State
-  private int currentState = ENABLED;
   @FloatRange(from = 0f, to = 1f)
   private float fraction = 0f;
+  private boolean enabled;
 
   @NonNull
   private final Paint dashPaint;
@@ -91,11 +83,13 @@ public class SwitchIconView extends AppCompatImageView {
 
     TypedArray array = getContext().getTheme().obtainStyledAttributes(attrs, R.styleable.SwitchIconView, 0, 0);
 
-    int iconTintColor;
     try {
       iconTintColor = array.getColor(R.styleable.SwitchIconView_si_tint_color, Color.BLACK);
       animationDuration = array.getInteger(R.styleable.SwitchIconView_si_animation_duration, DEFAULT_ANIMATION_DURATION);
       disabledStateAlpha = array.getFloat(R.styleable.SwitchIconView_si_disabled_alpha, DEFAULT_DISABLED_ALPHA);
+      disabledStateColor = array.getColor(R.styleable.SwitchIconView_si_disabled_color, iconTintColor);
+      enabled = array.getBoolean(R.styleable.SwitchIconView_si_enabled, true);
+      noDash = array.getBoolean(R.styleable.SwitchIconView_si_no_dash, false);
     } finally {
       array.recycle();
     }
@@ -105,74 +99,116 @@ public class SwitchIconView extends AppCompatImageView {
           + "Must be value from range [0, 1]");
     }
 
-    setColorFilter(new PorterDuffColorFilter(iconTintColor, PorterDuff.Mode.SRC_IN));
+    colorFilter = new PorterDuffColorFilter(iconTintColor, PorterDuff.Mode.SRC_IN);
+    setColorFilter(colorFilter);
 
     dashXStart = getPaddingLeft();
     dashYStart = getPaddingTop();
 
     dashPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     dashPaint.setStyle(Paint.Style.STROKE);
-    dashPaint.setColorFilter(new PorterDuffColorFilter(iconTintColor, PorterDuff.Mode.SRC_IN));
+    dashPaint.setColor(iconTintColor);
 
     clipPath = new Path();
 
     initDashCoordinates();
+    setFraction(enabled ? 0f : 1f);
   }
 
   /**
    * Changes state with animation
    *
-   * @param state {@link #ENABLED} or {@link #DISABLED}
-   * @throws IllegalArgumentException if {@param state} is invalid
+   * @param enabled If TRUE - icon is enabled
    */
-  public void setState(@State int state) {
-    setState(state, true);
+  public void setIconEnabled(boolean enabled) {
+    setIconEnabled(enabled, true);
   }
 
   /**
    * Changes state
    *
-   * @param state {@link #ENABLED} or {@link #DISABLED}
-   * @param animate Indicates that state will be changed with or without animation
-   * @throws IllegalArgumentException if {@param state} is invalid
+   * @param enabled If TRUE - icon is enabled
    */
-  public void setState(@State int state, boolean animate) {
-    if (state == currentState) return;
-    if (state != ENABLED && state != DISABLED) {
-      throw new IllegalArgumentException("Unknown state [" + state + "]");
-    }
+  public void setIconEnabled(boolean enabled, boolean animate) {
+    if (this.enabled == enabled) return;
     switchState(animate);
   }
 
   /**
-   * Switches state between values {@link #ENABLED} or {@link #DISABLED}
-   * with animation
+   * Check state
+   *
+   * @return TRUE if icon is enabled, otherwise FALSE
+   */
+  public boolean isIconEnabled() {
+    return enabled;
+  }
+
+  /**
+   * Switches icon state with animation
    */
   public void switchState() {
     switchState(true);
   }
 
   /**
-   * Switches state between values {@link #ENABLED} or {@link #DISABLED}
-   * with animation
+   * Switches icon state
    *
    * @param animate Indicates that state will be changed with or without animation
    */
   public void switchState(boolean animate) {
     float newFraction;
-    if (currentState == ENABLED) {
+    if (enabled) {
       newFraction = 1f;
-      currentState = DISABLED;
     } else {
       newFraction = 0f;
-      currentState = ENABLED;
     }
+    enabled = !enabled;
     if (animate) {
       animateToFraction(newFraction);
     } else {
       setFraction(newFraction);
       invalidate();
     }
+  }
+
+  @Override
+  public Parcelable onSaveInstanceState() {
+    Parcelable superState = super.onSaveInstanceState();
+    SwitchIconSavedState savedState = new SwitchIconSavedState(superState);
+    savedState.iconEnabled = enabled;
+    return savedState;
+  }
+
+  @Override
+  public void onRestoreInstanceState(Parcelable state) {
+    if (!(state instanceof SwitchIconSavedState)) {
+      super.onRestoreInstanceState(state);
+      return;
+    }
+    SwitchIconSavedState savedState = (SwitchIconSavedState) state;
+    super.onRestoreInstanceState(savedState.getSuperState());
+    enabled = savedState.iconEnabled;
+    setFraction(enabled ? 0f : 1f);
+  }
+
+  @Override
+  protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+    super.onSizeChanged(width, height, oldWidth, oldHeight);
+    dashLengthXProjection = width - getPaddingLeft() - getPaddingRight();
+    dashLengthYProjection = height - getPaddingTop() - getPaddingBottom();
+    dashThickness = (int) (DASH_THICKNESS_PART * (dashLengthXProjection + dashLengthYProjection) / 2f);
+    dashPaint.setStrokeWidth(dashThickness);
+    initDashCoordinates();
+    updateClipPath();
+  }
+
+  @Override
+  protected void onDraw(Canvas canvas) {
+    if (!noDash) {
+      drawDash(canvas);
+      canvas.clipPath(clipPath, Region.Op.XOR);
+    }
+    super.onDraw(canvas);
   }
 
   private void animateToFraction(float toFraction) {
@@ -190,29 +226,10 @@ public class SwitchIconView extends AppCompatImageView {
 
   private void setFraction(float fraction) {
     this.fraction = fraction;
-    int alpha = (int) ((disabledStateAlpha + (1f - fraction) * (1f - disabledStateAlpha)) * 255);
-    updateImageAlphaWithoutInvalidate(alpha);
-    dashPaint.setAlpha(alpha);
+    updateColor(fraction);
+    updateAlpha(fraction);
     updateClipPath();
     postInvalidateOnAnimationCompat();
-  }
-
-  @Override
-  protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
-    super.onSizeChanged(width, height, oldWidth, oldHeight);
-    dashLengthXProjection = width - getPaddingLeft() - getPaddingRight();
-    dashLengthYProjection = height - getPaddingTop() - getPaddingBottom();
-    dashThickness = (int) (DASH_THICKNESS_PART * (dashLengthXProjection + dashLengthYProjection) / 2f);
-    dashPaint.setStrokeWidth(dashThickness);
-    initDashCoordinates();
-    updateClipPath();
-  }
-
-  @Override
-  protected void onDraw(Canvas canvas) {
-    drawDash(canvas);
-    canvas.clipPath(clipPath, Region.Op.XOR);
-    super.onDraw(canvas);
   }
 
   private void initDashCoordinates() {
@@ -239,6 +256,34 @@ public class SwitchIconView extends AppCompatImageView {
     canvas.drawLine(dashStart.x, dashStart.y, x, y, dashPaint);
   }
 
+  private void updateColor(float fraction) {
+    if (iconTintColor != disabledStateColor) {
+      final int color = (int) colorEvaluator.evaluate(fraction, iconTintColor, disabledStateColor);
+      updateImageColor(color);
+      dashPaint.setColor(color);
+    }
+  }
+
+  private void updateAlpha(float fraction) {
+    int alpha = (int) ((disabledStateAlpha + (1f - fraction) * (1f - disabledStateAlpha)) * 255);
+    updateImageAlpha(alpha);
+    dashPaint.setAlpha(alpha);
+  }
+
+  private void updateImageColor(int color) {
+    colorFilter = new PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN);
+    setColorFilter(colorFilter);
+  }
+
+  @SuppressWarnings("deprecation")
+  private void updateImageAlpha(int alpha) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+      setImageAlpha(alpha);
+    } else {
+      setAlpha(alpha);
+    }
+  }
+
   private void postInvalidateOnAnimationCompat() {
     final long fakeFrameTime = 10;
     if (Build.VERSION.SDK_INT > Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
@@ -248,11 +293,34 @@ public class SwitchIconView extends AppCompatImageView {
     }
   }
 
-  private void updateImageAlphaWithoutInvalidate(int alpha) {
-    alpha &= 0xFF;
-    ReflectionUtils.setValue(this, "mAlpha", alpha);
-    ReflectionUtils.setValue(this, "mColorMod", true);
-    Class<?> noParams[] = {};
-    ReflectionUtils.callMethod(this, "applyColorMod", noParams);
+  static class SwitchIconSavedState extends BaseSavedState {
+    boolean iconEnabled;
+
+    SwitchIconSavedState(Parcelable superState) {
+      super(superState);
+    }
+
+    private SwitchIconSavedState(Parcel in) {
+      super(in);
+      final int enabled = in.readInt();
+      iconEnabled = enabled == 1;
+    }
+
+    @Override
+    public void writeToParcel(Parcel out, int flags) {
+      super.writeToParcel(out, flags);
+      out.writeInt(iconEnabled ? 1 : 0);
+    }
+
+    public static final Parcelable.Creator<SwitchIconSavedState> CREATOR =
+        new Parcelable.Creator<SwitchIconSavedState>() {
+          public SwitchIconSavedState createFromParcel(Parcel in) {
+            return new SwitchIconSavedState(in);
+          }
+
+          public SwitchIconSavedState[] newArray(int size) {
+            return new SwitchIconSavedState[size];
+          }
+        };
   }
 }
